@@ -19,6 +19,7 @@ import TableRow from '@tiptap/extension-table-row'
 import TaskItem from '@tiptap/extension-task-item'
 import TaskList from '@tiptap/extension-task-list'
 import { common, createLowlight } from 'lowlight'
+import { createMarkdownParser } from './markdown-parser.js'
 
 import type {
   MarkdownImageOptions,
@@ -817,6 +818,7 @@ export function createMarkdownExtensions({
 
   extensions.push(
     Markdown.configure({
+      marked: createMarkdownParser(),
       markedOptions: {
         gfm: true,
         breaks: false,
