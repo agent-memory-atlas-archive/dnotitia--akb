@@ -38,6 +38,27 @@ logger = logging.getLogger("akb.events_publisher")
 
 BATCH_SIZE = 64
 
+# Gardener operational tables whose row-change chatter must never reach the
+# event stream. The gardener writes sweep_log + gardener_event_log + gardener_kv
+# on EVERY sweep, and each of those writes fires the dynamic-table
+# rows_changed trigger — so without this filter the daemon's own bookkeeping
+# floods akb:events (~60% measured on SKH PoC 2026-09-30) and buries the real
+# source-vault changes the stream exists for. Matching is on the table NAME
+# suffix: resource_uri is akb://{vault}/table/{name} (or the coll/ form), and
+# these three names are gardener-owned by contract (state_tables.py).
+_SUPPRESSED_TABLE_SUFFIXES = (
+    "/table/sweep_log",
+    "/table/gardener_event_log",
+    "/table/gardener_kv",
+)
+
+
+def _is_suppressed(resource_uri: str | None) -> bool:
+    """True when a rows_changed event is gardener bookkeeping, not data."""
+    if not resource_uri:
+        return False
+    return any(resource_uri.endswith(suffix) for suffix in _SUPPRESSED_TABLE_SUFFIXES)
+
 # Sweep tuning — purge rows that were successfully published more than
 # 7 days ago. The grace window exists so an operator can debug delivery
 # issues against the outbox after the fact; once it's expired the row
@@ -229,6 +250,14 @@ async def _process_once() -> int:
 
         succeeded = 0
         for position, row in enumerate(batch):
+            # Gardener bookkeeping is marked published WITHOUT an XADD: it
+            # stays queryable in PG (the event tail still serves it) but never
+            # enters the stream, so the daemon stops waking on its own writes.
+            # The skip is counted as success — the row is drained, not retried.
+            if row.get("kind") == "table.rows_changed" and _is_suppressed(row.get("resource_uri")):
+                await _mark_published(conn, row["id"])
+                succeeded += 1
+                continue
             fields = _xadd_fields(row)
             try:
                 # redis-py's xadd stub takes the wider

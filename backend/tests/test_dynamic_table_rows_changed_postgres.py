@@ -283,6 +283,77 @@ async def test_publisher_fanout_preserves_rows_changed_envelope(monkeypatch):
             ) is True
 
 
+async def test_publisher_suppresses_gardener_bookkeeping_without_xadd(monkeypatch):
+    """sweep_log / gardener_event_log / gardener_kv rows_changed events are
+    marked published WITHOUT an XADD (self-feedback suppression, SKH 2026-09-30:
+    the daemon's own bookkeeping flooded akb:events at ~60%)."""
+    async with _fresh_database() as (pool, postgres_module):
+        await postgres_module._apply_migrations()
+        vault_id = await _make_vault(pool)
+        for table_name in ("sweep_log", "gardener_event_log", "gardener_kv", "nodes"):
+            pg_name = table_data_repo.pg_table_name("rows-changed", table_name)
+            async with pool.acquire() as conn:
+                await table_data_repo.create_dynamic_table(
+                    conn,
+                    pg_name,
+                    [{"name": "value", "type": "text"}],
+                    vault_name="rows-changed",
+                    vault_id=vault_id,
+                    resource_uri=f"akb://rows-changed/table/{table_name}",
+                )
+
+        executor = UserSqlExecutor(pool)
+        for table_name in ("sweep_log", "gardener_event_log", "gardener_kv", "nodes"):
+            pg_name = table_data_repo.pg_table_name("rows-changed", table_name)
+            await executor.execute(
+                user_id="user-id",
+                actor_id="alice",
+                sql=f"INSERT INTO {pg_name} (value) VALUES ('one')",
+                is_admin=True,
+                vault_names=["rows-changed"],
+            )
+
+        from app.services import events_publisher
+
+        class _Redis:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[Any, Any]]] = []
+
+            async def xadd(self, stream: str, fields: dict[Any, Any], **_: Any) -> str:
+                self.calls.append((stream, fields))
+                return "1-0"
+
+        redis = _Redis()
+        monkeypatch.setattr(events_publisher.settings, "redis_url", "redis://test")
+        monkeypatch.setattr(events_publisher, "get_pool", lambda: pool)
+        monkeypatch.setattr(events_publisher, "_client", AsyncMock(return_value=redis))
+
+        # 4 rows claimed; only `nodes` reaches the stream.
+        assert await events_publisher._process_once() == 4
+        assert len(redis.calls) == 1
+        _stream, fields = redis.calls[0]
+        assert fields[b"resource_uri"] == b"akb://rows-changed/table/nodes"
+
+        async with pool.acquire() as conn:
+            # All four drained (published), none left pending.
+            assert await conn.fetchval(
+                "SELECT COUNT(*) FROM events "
+                "WHERE vault_id = $1 AND redis_published_at IS NULL",
+                vault_id,
+            ) == 0
+
+        # A non-rows_changed kind on a suppressed NAME still publishes
+        # (the filter is kind + table-name, not name alone).
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO events (vault_id, kind, resource_uri, actor_id, payload) "
+                "VALUES ($1, 'document.put', 'akb://rows-changed/table/sweep_log', 'alice', '{}')",
+                vault_id,
+            )
+        assert await events_publisher._process_once() == 1
+        assert len(redis.calls) == 2
+
+
 async def test_publisher_fanout_reaches_a_real_redis_stream(monkeypatch):
     redis_url = os.environ.get("AKB_TEST_REDIS_URL")
     if not redis_url:
