@@ -226,12 +226,15 @@ describe("Layout — auth gate", () => {
     expect(
       screen.getByRole("button", { name: "Expand sidebar" }),
     ).toHaveAttribute("aria-expanded", "false");
-    const brandLink = within(sidebar).getByRole("link", { name: "AKB home" });
+    const brandLink = within(sidebar).getByRole("link", { name: "AKB home — Agent Knowledgebase" });
     expect(brandLink).toBeInTheDocument();
+    expect(brandLink).toHaveAttribute("href", "/");
     expect(within(brandLink).queryByText("AKB")).not.toBeInTheDocument();
+    expect(within(brandLink).queryByText("Agent Knowledgebase")).not.toBeInTheDocument();
     expect(sidebar).toHaveClass("fixed", "inset-y-0", "bg-surface");
     fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
     expect(within(sidebar).getByText("AKB")).toBeVisible();
+    expect(within(brandLink).queryByText("Agent Knowledgebase")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
     expect(localStorage.getItem("akb_app_sidebar_compact")).toBe("true");
   });
@@ -247,12 +250,25 @@ describe("Layout — auth gate", () => {
     expect(screen.getByRole("navigation", { name: "Current page" }).parentElement).toHaveClass("lg:px-5");
   });
 
+  it("keeps attribution outside the document-flow page landmark", async () => {
+    vi.mocked(api.getToken).mockReturnValue("fake-jwt");
+    renderAt("/");
+
+    await screen.findByTestId("home");
+    const footer = screen.getByRole("contentinfo");
+    expect(within(footer).getByText("© Dnotitia")).toBeInTheDocument();
+    expect(within(footer).getByText("Agent Knowledgebase")).toBeInTheDocument();
+    expect(footer).not.toHaveTextContent("Seahorse");
+    expect(screen.getByRole("main")).not.toContainElement(footer);
+  });
+
   it("does not reserve a second root scrollbar gutter for vault workspaces", async () => {
     vi.mocked(api.getToken).mockReturnValue("fake-jwt");
     renderAt("/vault/demo/settings");
 
     expect(await screen.findByTestId("vault-settings")).toBeTruthy();
     expect(document.documentElement).toHaveClass("vault-workspace-scroll-lock");
+    expect(screen.queryByRole("contentinfo")).toBeNull();
     expect(screen.getByTestId("app-sidebar")).toHaveAttribute(
       "data-compact",
       "true",

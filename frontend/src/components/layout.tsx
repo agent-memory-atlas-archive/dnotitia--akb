@@ -217,7 +217,7 @@ export function Layout() {
     return <Navigate to={to} replace />;
   }
   // Canvas-style workspaces lock to viewport height and own their internal
-  // scroll. Document-flow routes keep natural page scroll and the footer.
+  // scroll. Document-flow routes keep natural page scroll.
   const rootClass = viewportLocked
     ? "h-screen flex flex-col overflow-hidden bg-background text-foreground"
     : surface === "paper"
@@ -253,7 +253,7 @@ export function Layout() {
           <div className="flex shrink-0 items-center px-3 lg:hidden">
             <Link
               to="/"
-              aria-label="AKB home"
+              aria-label="AKB home — Agent Knowledgebase"
               className="shrink-0 rounded-[var(--radius-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               <Logo
@@ -358,13 +358,12 @@ export function Layout() {
             )}
           </main>
 
-          {/* Footer — hidden while a viewport-locked workspace owns scrolling. */}
+          {/* Document-flow pages retain a footer; full-height workspaces own scrolling. */}
           {!viewportLocked && (
-            <footer className="border-t border-border">
-              <div className="flex w-full items-center justify-between px-[var(--workspace-gutter)] py-3">
-                <div className="coord">© Dnotitia · Seahorse</div>
-                <div className="coord hidden md:block">Agent Knowledgebase</div>
-                <div className="coord">v1.0</div>
+            <footer id="app-footer" className="shrink-0 border-t border-border">
+              <div className="flex w-full flex-wrap items-center justify-between gap-x-6 gap-y-1 px-[var(--workspace-gutter)] py-3 text-xs leading-5 text-foreground-muted">
+                <span>© Dnotitia</span>
+                <span className="ml-auto text-right">Agent Knowledgebase</span>
               </div>
             </footer>
           )}
