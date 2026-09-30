@@ -372,6 +372,11 @@ jobs:
             # provides vchord_bm25.
             tests/test_sparse_shape_decision_postgres.py
             tests/test_bm25_run_lock.py
+            # The events_publisher self-feedback suppression (gardener
+            # bookkeeping trio) is a claim about PG trigger rows + the
+            # publisher drain — a fake proves nothing, and off this list
+            # the file skips in the unit job too and the fix ships ungated.
+            tests/test_dynamic_table_rows_changed_postgres.py
           )
           # A truncated list is the failure this step has already had
           # once, and it reads as a pass. Both halves of that are worth

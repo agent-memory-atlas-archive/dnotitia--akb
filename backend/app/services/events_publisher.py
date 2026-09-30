@@ -43,21 +43,49 @@ BATCH_SIZE = 64
 # on EVERY sweep, and each of those writes fires the dynamic-table
 # rows_changed trigger — so without this filter the daemon's own bookkeeping
 # floods akb:events (~60% measured on SKH PoC 2026-09-30) and buries the real
-# source-vault changes the stream exists for. Matching is on the table NAME
-# suffix: resource_uri is akb://{vault}/table/{name} (or the coll/ form), and
-# these three names are gardener-owned by contract (state_tables.py).
-_SUPPRESSED_TABLE_SUFFIXES = (
-    "/table/sweep_log",
-    "/table/gardener_event_log",
-    "/table/gardener_kv",
-)
+# source-vault changes the stream exists for.
+#
+# Identity is (vault NAME prefix, table NAME), resolved per event through the
+# vault_tables registry — NOT the URI suffix alone. Table names are not
+# reserved: a user vault may legitimately own a `sweep_log` table, and that
+# table's changes must still publish. Only the gardener's own operational
+# tables (gdn-* vaults, exact table names) are suppressed.
+_SUPPRESSED_VAULT_PREFIX = "gdn-"
+_SUPPRESSED_TABLE_NAMES = frozenset({
+    "sweep_log",
+    "gardener_event_log",
+    "gardener_kv",
+})
 
 
-def _is_suppressed(resource_uri: str | None) -> bool:
-    """True when a rows_changed event is gardener bookkeeping, not data."""
-    if not resource_uri:
+async def _is_suppressed(conn, row: dict) -> bool:
+    """True when a rows_changed event is gardener bookkeeping, not data.
+
+    Resolves the (vault name, table name) pair from the vault_tables registry
+    via the event's vault_id + resource_uri, then checks the gdn-* prefix and
+    the exact table name. A user vault's same-named table does NOT match.
+    Unknown/unresolvable rows are NOT suppressed (fail-open: publish).
+    """
+    resource_uri = row.get("resource_uri") or ""
+    vault_id = row.get("vault_id")
+    if not resource_uri or vault_id is None:
         return False
-    return any(resource_uri.endswith(suffix) for suffix in _SUPPRESSED_TABLE_SUFFIXES)
+    table_name = _table_name_from_uri(resource_uri)
+    if table_name not in _SUPPRESSED_TABLE_NAMES:
+        return False
+    vault_name = await conn.fetchval(
+        "SELECT name FROM vaults WHERE id = $1", vault_id,
+    )
+    return isinstance(vault_name, str) and vault_name.startswith(_SUPPRESSED_VAULT_PREFIX)
+
+
+def _table_name_from_uri(resource_uri: str) -> str:
+    """Extract the table name from akb://{vault}/table/{name} or the coll/ form."""
+    marker = "/table/"
+    idx = resource_uri.find(marker)
+    if idx < 0:
+        return ""
+    return resource_uri[idx + len(marker):]
 
 # Sweep tuning — purge rows that were successfully published more than
 # 7 days ago. The grace window exists so an operator can debug delivery
@@ -254,7 +282,10 @@ async def _process_once() -> int:
             # stays queryable in PG (the event tail still serves it) but never
             # enters the stream, so the daemon stops waking on its own writes.
             # The skip is counted as success — the row is drained, not retried.
-            if row.get("kind") == "table.rows_changed" and _is_suppressed(row.get("resource_uri")):
+            # Identity is (gdn-* vault, exact table name) via the registry, so
+            # a user vault's same-named table still publishes. Unresolvable
+            # rows fail open (publish).
+            if row.get("kind") == "table.rows_changed" and await _is_suppressed(conn, row):
                 await _mark_published(conn, row["id"])
                 succeeded += 1
                 continue
